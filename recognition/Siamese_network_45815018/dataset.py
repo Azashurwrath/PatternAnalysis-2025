@@ -7,9 +7,6 @@ import pandas as pd
 import random
 from sklearn.model_selection import train_test_split
 
-# Test
-import matplotlib.pyplot as plt
-
 # For reproducibility
 random.seed(42)
 
