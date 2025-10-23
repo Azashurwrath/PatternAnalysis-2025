@@ -61,15 +61,16 @@ class ContrastiveLoss(nn.Module):
         super(ContrastiveLoss, self).__init__()
         self.margin = margin
     
-    def forward(self, x, y, z):
+    def forward(self, emb1, emb2, label):
         # Using euclidian distance
-        diff = x - y
+        diff = emb1 - emb2
         sq_dist = torch.sum(torch.pow(diff, 2), 1)
-        dist = torch.sqrt(sq_dist)
+        dist = torch.sqrt(sq_dist + 1e-8)
 
-        mdist = self.margin - dist
-        dist = torch.clamp(mdist, min=0.0)
-        loss = y * sq_dist + (1 - y) * torch.pow(dist, 2)
-        loss = torch.sum(loss) / 2.0 / x.size()[0]
+        # margin distance for negative pairs
+        neg_dist = torch.clamp(self.margin - dist, min=0.0)
 
-        return loss
+        # contrastive loss
+        loss = (1 - label) * sq_dist + label * neg_dist**2
+
+        return loss.mean()

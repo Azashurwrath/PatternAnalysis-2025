@@ -11,7 +11,6 @@ from sklearn.model_selection import train_test_split
 random.seed(42)
 
 # Global Variables
-batch_size = 128
 split_ratio = 0.2
 
 # Transformations
@@ -47,7 +46,7 @@ class SiameseDataset(Dataset):
         else:
             # Negative pair
             neg_class = random.choice([c for c in self.classes if c != img_class])
-            idx2 = random.choice(self.class_dict[img_class])
+            idx2 = random.choice(self.class_dict[neg_class])
             label_pair = 1 # Different classes
         # Open paired image
         img2 = Image.open(self.image_paths[idx2]).convert("L")
@@ -86,7 +85,7 @@ def class_dict(targets):
     Custom function that allows a training dataset 
     to be split into train and validate data loaders
 """
-def train_and_validate_loaders(file_path, csv_path):
+def train_and_validate_loaders(file_path, csv_path, batch_size):
     # Combine file paths for ease of use
     csv = combine_file_paths(file_path, csv_path)
     # Get a validation set out of the training set
@@ -119,7 +118,3 @@ def train_and_validate_loaders(file_path, csv_path):
 
     # Return data loaders
     return train_loader, val_loader
-
-
-
-train_and_validate_loaders('./image', './train-metadata.csv')
