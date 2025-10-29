@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-#import dataset
-#import modules
+from dataset import train_and_validate_loaders
+from modules import SiameseNetwork, ContrastiveLoss
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, f1_score, recall_score, precision_score
@@ -14,7 +14,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 batch_size = 512
 num_epochs = 10
 learning_rate = 1e-4
-margin = 0.2
+margin = 1
 
 torch.manual_seed(42)
 np.random.seed(42)
@@ -34,22 +34,24 @@ def create_optimizer(model, learning_rate):
     return torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=0.0005)
 
 def train(model, train_loader, val_loader):
-    criterion = create_loss_function(margin)
-    optimizer = create_optimizer(model, learning_rate)
+    # --- setup ---
+    criterion = ContrastiveLoss(margin=margin)  # start with Euclidean
+    optimizer = create_optimizer(model, learning_rate)          # e.g. 1e-4
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=2)
 
-    loss_list = []
-    val_loss_list = []
-    counter = []
+    loss_list, val_loss_list, counter = [], [], []
+    best_val_loss = float("inf")
 
     for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0.0
-        all_dists, all_labels = [], []
+        # Refresh negative pairs every 5 epochs
+        if epoch > 0:
+            train_loader.dataset.refresh_pairs(epoch)
 
-        # -----------------------
-        # 🔹 TRAINING PHASE
-        # -----------------------
-        for image1, image2, label, (idx1, idx2) in train_loader:
+        model.train()
+        total_loss, all_dists, all_labels = 0.0, [], []
+
+        for image1, image2, label, _ in train_loader:
             image1, image2, label = image1.to(device), image2.to(device), label.to(device)
             optimizer.zero_grad()
 
@@ -60,70 +62,61 @@ def train(model, train_loader, val_loader):
 
             total_loss += loss.item()
 
-            # Collect distances for epoch stats
             with torch.no_grad():
-                d = 1 - F.cosine_similarity(output1, output2)
+                d = torch.norm(output1 - output2, p=2, dim=1)
                 all_dists.extend(d.cpu().numpy())
                 all_labels.extend(label.cpu().numpy())
 
-        # --- Training epoch metrics ---
+        # --- metrics ---
         avg_train_loss = total_loss / len(train_loader)
         loss_list.append(avg_train_loss)
         counter.append(epoch + 1)
 
-        all_dists = np.array(all_dists)
-        all_labels = np.array(all_labels)
-        pos_mask = (all_labels == 0)
-        neg_mask = (all_labels == 1)
-
+        all_dists, all_labels = np.array(all_dists), np.array(all_labels)
+        pos_mask = all_labels == 1 # same class
+        neg_mask = all_labels == 0 # diff class
         pos_mean_d = np.mean(all_dists[pos_mask]) if pos_mask.any() else float('nan')
         neg_mean_d = np.mean(all_dists[neg_mask]) if neg_mask.any() else float('nan')
         neg_inside = np.mean(all_dists[neg_mask] < margin) if neg_mask.any() else float('nan')
 
         print(f"\nEpoch {epoch}")
-        print(f"Train Loss={avg_train_loss:.4f}")
-        print(f"pos_mean_d={pos_mean_d:.3f}, neg_mean_d={neg_mean_d:.3f}, "
+        print(f"Train Loss={avg_train_loss:.4f}, "
+              f"pos_mean_d={pos_mean_d:.3f}, neg_mean_d={neg_mean_d:.3f}, "
               f"%neg_inside_margin={100*neg_inside:.1f}%")
 
-        # -----------------------
-        # 🔹 VALIDATION PHASE
-        # -----------------------
+        # --- validation ---
         model.eval()
-        val_loss = 0.0
-        val_dists, val_labels = [], []
-
+        val_loss, val_dists, val_labels = 0.0, [], []
         with torch.no_grad():
-            for image1, image2, label, (idx1, idx2) in val_loader:
+            for image1, image2, label, _ in val_loader:
                 image1, image2, label = image1.to(device), image2.to(device), label.to(device)
                 output1, output2 = model(image1, image2)
                 loss = criterion(output1, output2, label)
                 val_loss += loss.item()
 
-                d = 1 - F.cosine_similarity(output1, output2)
+                d = torch.norm(output1 - output2, p=2, dim=1)
                 val_dists.extend(d.cpu().numpy())
                 val_labels.extend(label.cpu().numpy())
 
         avg_val_loss = val_loss / len(val_loader)
         val_loss_list.append(avg_val_loss)
+        scheduler.step(avg_val_loss)
 
-        val_dists = np.array(val_dists)
-        val_labels = np.array(val_labels)
-        pos_mask = (val_labels == 0)
-        neg_mask = (val_labels == 1)
-
+        val_dists, val_labels = np.array(val_dists), np.array(val_labels)
+        pos_mask = val_labels == 1
+        neg_mask = val_labels == 0
         pos_mean_d = np.mean(val_dists[pos_mask]) if pos_mask.any() else float('nan')
         neg_mean_d = np.mean(val_dists[neg_mask]) if neg_mask.any() else float('nan')
 
         print(f"Val Loss={avg_val_loss:.4f}, "
               f"Val pos_mean_d={pos_mean_d:.3f}, Val neg_mean_d={neg_mean_d:.3f}")
-        
-        with torch.no_grad():
-            emb_var = torch.var(output1, dim=1).mean().item()
-            print(f"Embedding variance={emb_var:.4f}")
 
-    # -----------------------
-    # 🔹 PLOT TRAIN vs VAL LOSS
-    # -----------------------
+        # --- checkpoint ---
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), "best_model.pth")
+
+    # --- plot ---
     plt.plot(counter, loss_list, label="Train Loss")
     plt.plot(counter, val_loss_list, label="Val Loss")
     plt.xlabel("Epoch")
@@ -138,13 +131,11 @@ def validate(model, val_loader):
     model.eval()
     all_labels, all_distances, all_pairs = [], [], []
     with torch.no_grad():
-        for batch_idx, (image1, image2, label, (idx1, idx2)) in enumerate(val_loader):
+        for image1, image2, label, (idx1, idx2) in val_loader:
             image1, image2, label = image1.to(device), image2.to(device), label.to(device)
             output1, output2 = model(image1, image2)
-
             # Distance metric calculation
-            cosine_sim = F.cosine_similarity(output1, output2)
-            distances = 1 - cosine_sim
+            distances = torch.norm(output1 - output2, p=2, dim=1)
             all_distances.extend(distances.cpu().numpy())
             all_labels.extend(label.cpu().numpy())
             all_pairs.extend(zip(idx1, idx2))
@@ -155,7 +146,7 @@ def threshold_sweep(distances, labels, num_thresholds=200):
     distances = np.array(distances)
     labels = np.array(labels)
 
-    auc = roc_auc_score(labels, distances)
+    auc = roc_auc_score(labels, -distances)
     print(f"ROC AUC: {auc:.3f}")
 
     thresholds = np.linspace(distances.min(), distances.max(), num_thresholds)
@@ -166,7 +157,7 @@ def threshold_sweep(distances, labels, num_thresholds=200):
     recalls = []
 
     for t in thresholds:
-        pred = (distances > t).astype(int)
+        pred = (distances < t).astype(int)
         f1_scores.append(f1_score(labels, pred))
         accuracies.append(accuracy_score(labels, pred))
         precisions.append(precision_score(labels, pred, zero_division=0))
@@ -189,7 +180,7 @@ def threshold_sweep(distances, labels, num_thresholds=200):
     print("Best threshold:", best_threshold)
     print("Metrics at best threshold:", metrics_dict)
 
-    fpr, tpr, _ = roc_curve(labels, distances)
+    fpr, tpr, _ = roc_curve(labels, -distances)
     plt.figure(figsize=(6,5))
     plt.plot(fpr, tpr, label='ROC curve')
     plt.xlabel('False Positive Rate (FPR)')
@@ -198,7 +189,7 @@ def threshold_sweep(distances, labels, num_thresholds=200):
     plt.grid(True)
     plt.show()
 
-    precision, recall, _ = precision_recall_curve(labels, distances)
+    precision, recall, _ = precision_recall_curve(labels, -distances)
     plt.figure(figsize=(6,5))
     plt.plot(recall, precision, label ='PR Curve')
     plt.xlabel('Recall')
