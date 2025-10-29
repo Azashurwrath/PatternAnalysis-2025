@@ -38,105 +38,58 @@ val_transform = transforms.Compose([
 ])
 
 # Custom dataset class
+import random
+from torch.utils.data import Dataset
+from PIL import Image
+
 class SiameseDataset(Dataset):
     def __init__(self, img_paths, targets, patient_ids, class_dict, transforms=None):
-        # Initialization
         self.image_paths = img_paths
         self.targets = targets
         self.patient_ids = patient_ids
-        self.transform = transforms
-        # Create an index dictionary for different classes to use to create image pairs
         self.class_dict = class_dict
-        self.classes = list(self.class_dict.keys())
-        self.pairs = self._create_pairs()
+        self.classes = list(class_dict.keys())
+        self.transform = transforms
 
-    """
-        Create balanced positive and negative pairs.
-        Ensures:
-          • Positive pairs = same class, different patients
-          • Negative pairs = different class, different patients
-          • Equal benign and malignant anchors (oversampling malignant)
-          • Keeps large pair count (~full dataset * ratio (for training speed))
-        """
-    def _create_pairs(self):
-        
-        positive_pairs, negative_pairs = [], []
-
-        # --- Separate class indices ---
-        benign_idxs = [i for i, y in enumerate(self.targets) if y == 0]
-        malig_idxs  = [i for i, y in enumerate(self.targets) if y == 1]
-        class_groups = {0: benign_idxs, 1: malig_idxs}
-
-        # --- Oversample minority class so both anchor sets are same length ---
-        sample_n = len(benign_idxs)
-        benign_sample = random.sample(benign_idxs, sample_n)
-        malig_sample = (
-            random.choices(malig_idxs, k=sample_n)
-            if len(malig_idxs) < sample_n
-            else random.sample(malig_idxs, sample_n)
-        )
-
-        # ==============================================================
-        # --- POSITIVE PAIRS: same class, different patients ---
-        # ==============================================================
-        for cls, indices in class_groups.items():
-            # Pick anchors: oversampled malignant, full benign
-            anchors = benign_sample if cls == 0 else malig_sample
-            shuffled = indices.copy()
-            random.shuffle(shuffled)
-
-            for idx1 in anchors:
-                pid1 = self.patient_ids[idx1]
-                # Same class, different patient
-                candidates = [idx2 for idx2 in shuffled if self.patient_ids[idx2] != pid1]
-                if not candidates:
-                    continue
-                idx2 = random.choice(candidates)
-                positive_pairs.append((idx1, idx2, 0))  # 0 = same class (diff patient)
-
-        # ==============================================================
-        # --- NEGATIVE PAIRS: different class, different patients ---
-        # ==============================================================
-        anchor_pool = benign_sample + malig_sample
-        random.shuffle(anchor_pool)
-
-        while len(negative_pairs) < len(positive_pairs):
-            idx1 = random.choice(anchor_pool)
-            label1 = self.targets[idx1]
-            pid1 = self.patient_ids[idx1]
-
-            neg_class = 1 - label1
-            idx2 = random.choice(self.class_dict[neg_class])
-            pid2 = self.patient_ids[idx2]
-            if pid1 == pid2:
-                continue
-
-            negative_pairs.append((idx1, idx2, 1))  # 1 = different class
-
-        # --- Combine and shuffle ---
-        pair_ratio = 0.25  # keep 25% of all pairs
-
-        # compute how many positives/negatives to keep
-        keep_pos = int(len(positive_pairs) * pair_ratio)
-        keep_neg = int(len(negative_pairs) * pair_ratio)
-
-        positive_pairs = random.sample(positive_pairs, keep_pos)
-        negative_pairs = random.sample(negative_pairs, keep_neg)
-
-        pairs = positive_pairs + negative_pairs
-        random.shuffle(pairs)
-
-        return pairs
-
-    # Get dataset length
     def __len__(self):
-        return len(self.pairs)
+        return len(self.image_paths)
 
-    def __getitem__(self, idx):
-        idx1, idx2, label = self.pairs[idx]
+    def __getitem__(self, idx1):
+        img1_path = self.image_paths[idx1]
+        label1 = self.targets[idx1]
+        pid1 = self.patient_ids[idx1]
 
-        img1 = Image.open(self.image_paths[idx1]).convert("RGB")
-        img2 = Image.open(self.image_paths[idx2]).convert("RGB")
+        # --- Decide positive or negative pair ---
+        is_positive = random.random() < 0.5
+
+        if is_positive:
+            # Pick from same class, different patient
+            candidates = [
+                i for i in self.class_dict[label1]
+                if self.patient_ids[i] != pid1
+            ]
+            label = 0
+        else:
+            # Pick from opposite class, different patient
+            neg_class = 1 - label1
+            candidates = [
+                i for i in self.class_dict[neg_class]
+                if self.patient_ids[i] != pid1
+            ]
+            label = 1
+
+        # Safety check
+        if not candidates:
+            # Fallback: random other index
+            idx2 = random.choice(range(len(self.image_paths)))
+        else:
+            idx2 = random.choice(candidates)
+
+        img2_path = self.image_paths[idx2]
+
+        # --- Load images ---
+        img1 = Image.open(img1_path).convert("RGB")
+        img2 = Image.open(img2_path).convert("RGB")
 
         if self.transform:
             img1 = self.transform(img1)
@@ -213,28 +166,24 @@ def train_and_validate_loaders():
     # Create Datasets
     train_dataset = SiameseDataset(
         train_paths, train_labels, train_pids,
-        train_dict, transforms=train_transform
-    )
+        train_dict, transforms=train_transform)
     val_dataset = SiameseDataset(
         val_paths, val_labels, val_pids,
-        val_dict, transforms=val_transform
-    )
+        val_dict, transforms=val_transform)
 
-    # Weighted sampler for class balancing
-    anchor_classes = [train_labels[idx1] for idx1, _, _ in train_dataset.pairs]
+    # Weighted sampler for anchors (balancing malignant class)
     counts = Counter(train_labels)
     class_weights = {cls: 1.0 / count for cls, count in counts.items()}
-    pair_weights = [class_weights[cls] for cls in anchor_classes]
+    sample_weights = [class_weights[label] for label in train_labels]
 
     sampler = WeightedRandomSampler(
-        weights=pair_weights,
-        num_samples=len(pair_weights),
+        weights=sample_weights,
+        num_samples=len(train_labels),
         replacement=True,
         generator=gen
     )
-
     # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size, sampler=sampler)
-    val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size, shuffle=False)
 
     return train_loader, val_loader
