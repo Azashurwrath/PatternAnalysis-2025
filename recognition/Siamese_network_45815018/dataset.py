@@ -1,5 +1,5 @@
 # Imports to create dataset
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 import os
@@ -17,6 +17,8 @@ gen.manual_seed(42)
 # Global Variables
 split_ratio = 0.2
 batch_size = 512
+neg_ratio = 1
+pairs_per_class = 8000
 
 # Training transforms with augmentation
 train_transform = transforms.Compose([
@@ -37,65 +39,125 @@ val_transform = transforms.Compose([
                      std=[0.5, 0.5, 0.5])
 ])
 
-# Custom dataset class
-import random
-from torch.utils.data import Dataset
-from PIL import Image
+"""
+    Custom dataset for ISIC 2020 dataset
+    This dataset creates pairs before training and not during runtime,
+    this is because it allows for more control over pair distribution,
+    make sure no easy learning can be done (same patient id for images)
 
+    Args:
+        img_paths (list): List of full image paths.
+        img_paths (list): List of full image paths.
+        targets (list[int]): Binary class labels (0=benign, 1=malignant).
+        patient_ids (list): Corresponding patient IDs.
+        class_dict (dict): Mapping of class -> list of sample indices.
+        transforms: Torchvision transforms.
+        pairs_per_class (int): Number of positive pairs per class.
+        neg_pos_ratio (float): Negatives per positive (1.0 = equal).
+        refresh_every (int): Epoch interval to refresh negatives.
+        seed (int): Random seed for reproducibility.
+"""
 class SiameseDataset(Dataset):
-    def __init__(self, img_paths, targets, patient_ids, class_dict, transforms=None):
+    def __init__(self, img_paths, targets, patient_ids, class_dict,
+                 transforms=None, pairs_per_class=8000, neg_pos_ratio=1.0,
+                 refresh_every=5, seed=42,):
+        # Variables for dataset
         self.image_paths = img_paths
         self.targets = targets
         self.patient_ids = patient_ids
         self.class_dict = class_dict
         self.classes = list(class_dict.keys())
-        self.transform = transforms
+        self.transforms = transforms
+        self.pairs_per_class = pairs_per_class
+        self.neg_pos_ratio = neg_pos_ratio
+        self.refresh_every = refresh_every
+        self.epoch_count = 0
+        self.rng = random.Random(seed)
 
+        # Build initial pairs
+        self.pos_pairs = self._build_positive_pairs()
+        self.neg_pairs = self._build_negative_pairs()
+        self._combine_and_shuffle_pairs()
+
+    
+    # Function to create Positive pairs
+    def _build_positive_pairs(self):
+        """Create same-class pairs from different patients."""
+        pos_pairs = []
+        for cls in self.classes:
+            indices = self.class_dict[cls]
+            for _ in range(self.pairs_per_class):
+                while True:
+                    idx1, idx2 = self.rng.sample(indices, 2)
+                    # Check images are not from same patient
+                    if self.patient_ids[idx1] != self.patient_ids[idx2]:
+                        # Images not from same patient -> prevent 'cheat' learning
+                        pos_pairs.append((idx1, idx2, 1.0))
+                        break
+        return pos_pairs
+
+    # Function to create Negative pairs based on ratio
+    def _build_negative_pairs(self):
+        """Create cross-class pairs from different patients."""
+        neg_pairs = []
+        # Amount of negative pairs needed based on positive pairs
+        total_neg = int(len(self.pos_pairs) * self.neg_pos_ratio)
+        # Get class indexes
+        benign = self.class_dict[0]
+        malig = self.class_dict[1]
+        for _ in range(total_neg):
+            while True:
+                # Get a random image from the two classes
+                idx1 = self.rng.choice(benign)
+                idx2 = self.rng.choice(malig)
+                # Check images are not from same patient
+                if self.patient_ids[idx1] != self.patient_ids[idx2]:
+                    # Add to list
+                    neg_pairs.append((idx1, idx2, 0.0))
+                    break
+        return neg_pairs
+
+    # Combines positive and negative pairs and shuffles
+    def _combine_and_shuffle_pairs(self):
+        """Merge and shuffle pairs into one list."""
+        self.pairs = self.pos_pairs + self.neg_pairs
+        self.rng.shuffle(self.pairs)
+
+    
+    # Function that refreshes negative pairs at a given epoch (5)
+    def refresh_pairs(self, epoch=None):
+        """
+        Refresh negative pairs every `refresh_every` epochs
+        to expose the model to new contrastive samples.
+        """
+        if epoch is not None:
+            self.epoch_count = epoch
+
+        if self.epoch_count % self.refresh_every == 0:
+            print(f"[Dataset] Refreshing negative pairs at epoch {self.epoch_count}...")
+            self.neg_pairs = self._build_negative_pairs()
+            self._combine_and_shuffle_pairs()
+
+    # ------------------------------------------------------
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.pairs)
 
-    def __getitem__(self, idx1):
-        img1_path = self.image_paths[idx1]
-        label1 = self.targets[idx1]
-        pid1 = self.patient_ids[idx1]
+    def _load_img(self, idx):
+        path = self.image_paths[idx]
+        img = Image.open(path).convert("RGB")
+        return img
 
-        # --- Decide positive or negative pair ---
-        is_positive = random.random() < 0.5
-
-        if is_positive:
-            # Pick from same class, different patient
-            candidates = [
-                i for i in self.class_dict[label1]
-                if self.patient_ids[i] != pid1
-            ]
-            label = 0
-        else:
-            # Pick from opposite class, different patient
-            neg_class = 1 - label1
-            candidates = [
-                i for i in self.class_dict[neg_class]
-                if self.patient_ids[i] != pid1
-            ]
-            label = 1
-
-        # Safety check
-        if not candidates:
-            # Fallback: random other index
-            idx2 = random.choice(range(len(self.image_paths)))
-        else:
-            idx2 = random.choice(candidates)
-
-        img2_path = self.image_paths[idx2]
-
-        # --- Load images ---
-        img1 = Image.open(img1_path).convert("RGB")
-        img2 = Image.open(img2_path).convert("RGB")
-
-        if self.transform:
-            img1 = self.transform(img1)
-            img2 = self.transform(img2)
-
-        return img1, img2, label, (idx1, idx2)
+    def __getitem__(self, idx):
+        # Get image indexes and pair label
+        idx1, idx2, label = self.pairs[idx]
+        # Load images
+        img1, img2 = self._load_img(idx1), self._load_img(idx2)
+        # Transform if needed
+        if self.transforms:
+            img1 = self.transforms(img1)
+            img2 = self.transforms(img2)
+        # Return images, pair label, and image indexes for test image showing
+        return img1, img2, torch.tensor(label, dtype=torch.float32), (idx1, idx2)
 
 """
     Combine the metadata csv and file paths to images into one file and row for easy access and use
@@ -133,7 +195,6 @@ def train_and_validate_loaders():
     csv = combine_file_paths(file_path, csv_path)
 
     # Split by patient_id, not by image, to avoid leakage
-    # Keep class ratio (≈5:1) using patient-level stratification
     patient_targets = (
         csv.groupby("patient_id")["target"]
            .agg(lambda x: x.mode()[0])  # use the majority label per patient
@@ -166,24 +227,15 @@ def train_and_validate_loaders():
     # Create Datasets
     train_dataset = SiameseDataset(
         train_paths, train_labels, train_pids,
-        train_dict, transforms=train_transform)
+        train_dict, transforms=train_transform,
+        pairs_per_class=pairs_per_class, neg_pos_ratio=neg_ratio)
     val_dataset = SiameseDataset(
         val_paths, val_labels, val_pids,
-        val_dict, transforms=val_transform)
+        val_dict, transforms=val_transform,
+        pairs_per_class=pairs_per_class, neg_pos_ratio=neg_ratio)
 
-    # Weighted sampler for anchors (balancing malignant class)
-    counts = Counter(train_labels)
-    class_weights = {cls: 1.0 / count for cls, count in counts.items()}
-    sample_weights = [class_weights[label] for label in train_labels]
-
-    sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(train_labels),
-        replacement=True,
-        generator=gen
-    )
     # DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size, sampler=sampler)
+    train_loader = DataLoader(train_dataset, batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size, shuffle=False)
 
     return train_loader, val_loader
