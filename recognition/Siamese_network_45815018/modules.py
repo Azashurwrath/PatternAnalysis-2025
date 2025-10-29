@@ -11,35 +11,33 @@ class SiameseNetwork(nn.Module):
     def __init__(self):
         super(SiameseNetwork, self).__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=7, stride=1, padding=3),
+            nn.Conv2d(3, 32, kernel_size=7, stride=2, padding=3),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2),
 
-            nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2),
 
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2),
 
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((7, 7)),
-            nn.Dropout2d(p=0.4),
+            nn.MaxPool2d(2),
         )
 
         self.fc = nn.Sequential(
             nn.Linear(256 * 7 * 7, 512),
-            nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 128),
+            nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Linear(128, 64),
+            nn.Linear(256, 128),
         )
 
     def forward_one(self, x):
@@ -63,13 +61,25 @@ class SiameseNetwork(nn.Module):
 
 class ContrastiveLoss(nn.Module):
     def __init__(self, margin=1.0):
-        super(ContrastiveLoss, self).__init__()
+        """
+        margin:    separation margin between negative pairs
+        use_cosine: if True, use cosine distance; else use Euclidean distance
+        """
+        super().__init__()
         self.margin = margin
 
     def forward(self, emb1, emb2, label):
-        # cosine distance in [0, 2] for unit vectors
-        cos_dist = 1 - F.cosine_similarity(emb1, emb2)   # shape [B]
+        # Loss function
         label = label.float()
-        pos = (1 - label) * (cos_dist ** 2)              # pull same-class together
-        neg = label * torch.clamp(self.margin - cos_dist, min=0.0) ** 2
-        return (pos + neg).mean()
+        # Euclidean distance
+        diff = emb1 - emb2
+        dist_sq = torch.sum(diff * diff, dim=1)
+        dist = torch.sqrt(dist_sq + 1e-8)
+
+        # --- contrastive loss ---
+        pos = label * dist_sq
+        # Negative (different) -> push apart until margin: 
+        #(1 - label) * max(0,m - d)^2
+        neg = (1 - label) * torch.clamp(self.margin - dist, min=0.0).pow(2)
+        loss = torch.mean(pos + neg)
+        return loss
