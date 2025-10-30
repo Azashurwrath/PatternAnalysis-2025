@@ -15,7 +15,8 @@ gen = torch.Generator()
 gen.manual_seed(42)
 
 # Global Variables
-split_ratio = 0.2
+split_val = 0.15
+split_test = 0.15
 batch_size = 512
 neg_ratio = 1
 pairs_per_class = 8000
@@ -39,25 +40,25 @@ val_transform = transforms.Compose([
                      std=[0.5, 0.5, 0.5])
 ])
 
-"""
-    Custom dataset for ISIC 2020 dataset
-    This dataset creates pairs before training and not during runtime,
-    this is because it allows for more control over pair distribution,
-    make sure no easy learning can be done (same patient id for images)
+class SiameseDataset(Dataset):
+    """
+    Patient-leakage-safe Siamese dataset for ISIC 2020.
+    --------------------------------------------------
+    Precomputes balanced positive & negative pairs and
+    refreshes negative pairs every N epochs to maintain learning diversity.
 
     Args:
-        img_paths (list): List of full image paths.
         img_paths (list): List of full image paths.
         targets (list[int]): Binary class labels (0=benign, 1=malignant).
         patient_ids (list): Corresponding patient IDs.
         class_dict (dict): Mapping of class -> list of sample indices.
-        transforms: Torchvision transforms.
+        transform: Torchvision transform.
         pairs_per_class (int): Number of positive pairs per class.
         neg_pos_ratio (float): Negatives per positive (1.0 = equal).
         refresh_every (int): Epoch interval to refresh negatives.
         seed (int): Random seed for reproducibility.
-"""
-class SiameseDataset(Dataset):
+    """
+
     def __init__(self, img_paths, targets, patient_ids, class_dict,
                  transforms=None, pairs_per_class=8000, neg_pos_ratio=1.0,
                  refresh_every=5, seed=42,):
@@ -79,52 +80,46 @@ class SiameseDataset(Dataset):
         self.neg_pairs = self._build_negative_pairs()
         self._combine_and_shuffle_pairs()
 
-    
-    # Function to create Positive pairs
+    # ------------------------------------------------------
+    # BUILD FUNCTIONS
+    # ------------------------------------------------------
     def _build_positive_pairs(self):
         """Create same-class pairs from different patients."""
         pos_pairs = []
-        for cls in self.classes:
-            indices = self.class_dict[cls]
+        for c in self.classes:
+            indices = self.class_dict[c]
             for _ in range(self.pairs_per_class):
                 while True:
-                    idx1, idx2 = self.rng.sample(indices, 2)
-                    # Check images are not from same patient
-                    if self.patient_ids[idx1] != self.patient_ids[idx2]:
-                        # Images not from same patient -> prevent 'cheat' learning
-                        pos_pairs.append((idx1, idx2, 1.0))
+                    i, j = self.rng.sample(indices, 2)
+                    if self.patient_ids[i] != self.patient_ids[j]:
+                        pos_pairs.append((i, j, 1.0))
                         break
         return pos_pairs
 
-    # Function to create Negative pairs based on ratio
     def _build_negative_pairs(self):
         """Create cross-class pairs from different patients."""
         neg_pairs = []
-        # Amount of negative pairs needed based on positive pairs
         total_neg = int(len(self.pos_pairs) * self.neg_pos_ratio)
-        # Get class indexes
         benign = self.class_dict[0]
         malig = self.class_dict[1]
+
         for _ in range(total_neg):
             while True:
-                # Get a random image from the two classes
-                idx1 = self.rng.choice(benign)
-                idx2 = self.rng.choice(malig)
-                # Check images are not from same patient
-                if self.patient_ids[idx1] != self.patient_ids[idx2]:
-                    # Add to list
-                    neg_pairs.append((idx1, idx2, 0.0))
+                i = self.rng.choice(benign)
+                j = self.rng.choice(malig)
+                if self.patient_ids[i] != self.patient_ids[j]:
+                    neg_pairs.append((i, j, 0.0))
                     break
         return neg_pairs
 
-    # Combines positive and negative pairs and shuffles
     def _combine_and_shuffle_pairs(self):
         """Merge and shuffle pairs into one list."""
         self.pairs = self.pos_pairs + self.neg_pairs
         self.rng.shuffle(self.pairs)
 
-    
-    # Function that refreshes negative pairs at a given epoch (5)
+    # ------------------------------------------------------
+    # REFRESH MECHANISM
+    # ------------------------------------------------------
     def refresh_pairs(self, epoch=None):
         """
         Refresh negative pairs every `refresh_every` epochs
@@ -148,15 +143,13 @@ class SiameseDataset(Dataset):
         return img
 
     def __getitem__(self, idx):
-        # Get image indexes and pair label
         idx1, idx2, label = self.pairs[idx]
-        # Load images
         img1, img2 = self._load_img(idx1), self._load_img(idx2)
-        # Transform if needed
+
         if self.transforms:
             img1 = self.transforms(img1)
             img2 = self.transforms(img2)
-        # Return images, pair label, and image indexes for test image showing
+
         return img1, img2, torch.tensor(label, dtype=torch.float32), (idx1, idx2)
 
 """
@@ -201,16 +194,26 @@ def train_and_validate_loaders():
            .reset_index()
     )
 
-    train_pids, val_pids = train_test_split(
+    train_val_pids, val_pids = train_test_split(
         patient_targets["patient_id"],
-        test_size=split_ratio,
+        test_size=split_val,
         stratify=patient_targets["target"],
+        random_state=42
+    )
+
+    train_pids, test_pids = train_test_split(
+        train_val_pids,
+        test_size=split_val / (1 - split_test),  # adjust fraction relative to remaining data
+        stratify=patient_targets.loc[
+            patient_targets["patient_id"].isin(train_val_pids), "target"
+        ],
         random_state=42
     )
 
     # Create train/validation splits by patient membership
     train_csv = csv[csv["patient_id"].isin(train_pids)]
     val_csv   = csv[csv["patient_id"].isin(val_pids)]
+    test_csv  = csv[csv["patient_id"].isin(test_pids)]
 
     # Prepare lists and class dictionaries
     train_paths = train_csv["image_path"].to_list()
@@ -221,21 +224,33 @@ def train_and_validate_loaders():
     val_labels = val_csv["target"].to_list()
     val_pids = val_csv["patient_id"].to_list()
 
+    test_paths = val_csv["image_path"].to_list()
+    test_labels = val_csv["target"].to_list()
+    test_pids = val_csv["patient_id"].to_list()
+
     train_dict = class_dict(train_labels)
     val_dict   = class_dict(val_labels)
+    test_dict  = class_dict(test_labels)
 
     # Create Datasets
     train_dataset = SiameseDataset(
         train_paths, train_labels, train_pids,
         train_dict, transforms=train_transform,
         pairs_per_class=pairs_per_class, neg_pos_ratio=neg_ratio)
+    
     val_dataset = SiameseDataset(
         val_paths, val_labels, val_pids,
         val_dict, transforms=val_transform,
+        pairs_per_class=pairs_per_class, neg_pos_ratio=neg_ratio)
+    
+    test_dataset = SiameseDataset(
+        test_paths, test_labels, test_pids,
+        test_dict, transforms=val_transform,
         pairs_per_class=pairs_per_class, neg_pos_ratio=neg_ratio)
 
     # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size, shuffle=False)
 
-    return train_loader, val_loader
+    return train_loader, val_loader, test_loader
