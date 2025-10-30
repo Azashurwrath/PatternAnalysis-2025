@@ -1,4 +1,4 @@
-# Siamese Network Classification on ISIC 2020 Kaggle Dataset using Contrastive Loss
+# Siamese Network Classification on ISIC 2020 Kaggle Dataset
 
 ## Problem to solve
 
