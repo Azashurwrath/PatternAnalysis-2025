@@ -22,7 +22,7 @@ L<sub>BCE</sub> = $-\frac{1}{N}\sum_{i=1}^{N}\left[y_i\log(p_i) + (1 - y_i)\log(
 
 ## Data Preprocessing
 
-The train data was split into the following datasets train/validation/test with the following ratio 0.75/0.15/0.10. This allowed the creation of three datasets to train, validate and then test the model on. The original train dataset has around 33,000 images this split allows for each dataset to have sufficient data to train properly, receive valid validation metrics with losses and have a sufficiently large test set.
+The train data was split into the following datasets train/validation/test with the following ratio 0.75/0.15/0.10. This allowed the creation of three datasets to train, validate and then test the model on. The original train dataset has around 33,000 images this split allows for each dataset to have sufficient data to train properly, receive valid validation metrics with losses and have a sufficiently large test set. A split for the test set was done as well due to the ISIC 2020 test set not having any ground truth labels making the test set not usable for comparing accuracies.
 
 Further preprocessing was done where the images were resized to 224x224. Three data augmentations were done doing training which were random vertical flip, random horizontal flip, and finally random rotation at 20 degrees. These augmentations were done to provide the model more training variety, with the goal of increasing the models generalization capabilities. The RGB pixel intensity values were then scaled to a range of 0 to 1 and then normalized with mean = 0.5 and standard deviation = 0.5 for each pixel intensity.
 
@@ -71,7 +71,7 @@ It can be seen that the model performed much better than a random classifier wit
 | **Macro Avg**   | 0.55 | 0.75 | 0.56 | 3313 |
 | **Weighted Avg**| 0.98 | 0.90 | 0.94 | 3313 |
 
-### Test set accuracy is 90%
+### Final Test set accuracy is 90%
 
 ### Confusion Matrix
 |                | **Predicted 0** | **Predicted 1** |
