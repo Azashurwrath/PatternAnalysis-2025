@@ -1,11 +1,9 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
 
 """
-    Class module for the Siamese network
+    Class module for the Siamese backbone network that produces the image embeddings
 """
 class Embeddings(nn.Module):
     def __init__(self):
@@ -31,7 +29,8 @@ class Embeddings(nn.Module):
             nn.ReLU(),
             nn.MaxPool2d(2),
         )
-
+        
+        # Get embeddings from images
         self.embedding = nn.Sequential(
             nn.Linear(256 * 7 * 7, 512),
             nn.ReLU(),
@@ -40,6 +39,7 @@ class Embeddings(nn.Module):
             nn.Linear(256, 128),
         )
 
+        # Get predictions from embeddings
         self.classifer = nn.Sequential(
           nn.Dropout(p=0.3),
           nn.Linear(128, 64),
@@ -56,19 +56,18 @@ class Embeddings(nn.Module):
         output = output.view(output.size(0), -1)
         # Put modified input into fully connected
         embedding = self.embedding(output)
-
+        # Get logits from embeddings
         logits = self.classifer(embedding)
-
         return logits
 
+"""
+    Head layer on top of the Siamese backbone layer that returns logits
+"""
 class SiameseClassifier(nn.Module):
   def __init__(self):
-      super(SiameseClassifier, self).__init__()
-
-      self.features = Embeddings()
+        super(SiameseClassifier, self).__init__()
+        self.features = Embeddings()
 
   def forward(self, x):
-
-      logits = self.features(x)
-
-      return logits
+        logits = self.features(x)
+        return logits

@@ -5,9 +5,9 @@ from PIL import Image
 import os
 import pandas as pd
 import random
-from collections import Counter
 from sklearn.model_selection import train_test_split
 import torch
+from params import *
 
 # For reproducibility
 random.seed(42)
@@ -18,7 +18,6 @@ random_state = 42
 # Global Variables
 split_val = 0.15
 split_test = 0.10
-batch_size = 64
 
 # Training transforms with augmentation
 train_transform = transforms.Compose([
