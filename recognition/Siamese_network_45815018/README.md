@@ -6,7 +6,7 @@ Using the ISIC 2020 kaggle dataset and being able to classify images as benign o
 
 ## Model Description and Loss Function 
 
-The Siamese architecture backbone is based off the following Figure 1 seen below where the input into the model is a pair of images and a pair label with 0 for different classes and 1 for similar classes.:
+The Siamese architecture backbone is based off the branch design in the following Figure 1 seen below however in the model design only one branch is utilized unlike the paired branches:
 
 ![Figure 1](./README_images/siamese_network_image.webp)
 
