@@ -7,9 +7,9 @@ import numpy as np
 """
     Class module for the Siamese network
 """
-class SiameseNetwork(nn.Module):
+class Embeddings(nn.Module):
     def __init__(self):
-        super(SiameseNetwork, self).__init__()
+        super(Embeddings, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=7, stride=2, padding=3),
             nn.BatchNorm2d(32),
@@ -32,7 +32,7 @@ class SiameseNetwork(nn.Module):
             nn.MaxPool2d(2),
         )
 
-        self.fc = nn.Sequential(
+        self.embedding = nn.Sequential(
             nn.Linear(256 * 7 * 7, 512),
             nn.ReLU(),
             nn.Linear(512, 256),
@@ -40,46 +40,35 @@ class SiameseNetwork(nn.Module):
             nn.Linear(256, 128),
         )
 
-    def forward_one(self, x):
+        self.classifer = nn.Sequential(
+          nn.Dropout(p=0.3),
+          nn.Linear(128, 64),
+          nn.ReLU(),
+          nn.Linear(64, 32),
+          nn.ReLU(),
+          nn.Linear(32, 1)
+      )
+
+    def forward(self, img):
         # Input goes through convolution
-        output = self.conv(x)
+        output = self.conv(img)
         # Modify shape to be used in fully connected layer
         output = output.view(output.size(0), -1)
         # Put modified input into fully connected
-        output = self.fc(output)
-        # Return learn't feature space
-        output = F.normalize(output, p=2, dim=1)
-        return output
+        embedding = self.embedding(output)
 
-    def forward(self, img1, img2):
-        # Get features of first image
-        output1 = self.forward_one(img1)
-        # Get features of second image
-        output2 = self.forward_one(img2)
-        # Return both feature vectors
-        return output1, output2
+        logits = self.classifer(embedding)
 
-class ContrastiveLoss(nn.Module):
-    def __init__(self, margin=1.0):
-        """
-        margin:    separation margin between negative pairs
-        use_cosine: if True, use cosine distance; else use Euclidean distance
-        """
-        super().__init__()
-        self.margin = margin
+        return logits
 
-    def forward(self, emb1, emb2, label):
-        # Loss function
-        label = label.float()
-        # Euclidean distance
-        diff = emb1 - emb2
-        dist_sq = torch.sum(diff * diff, dim=1)
-        dist = torch.sqrt(dist_sq + 1e-8)
+class SiameseClassifier(nn.Module):
+  def __init__(self):
+      super(SiameseClassifier, self).__init__()
 
-        # --- contrastive loss ---
-        pos = label * dist_sq
-        # Negative (different) -> push apart until margin: 
-        #(1 - label) * max(0,m - d)^2
-        neg = (1 - label) * torch.clamp(self.margin - dist, min=0.0).pow(2)
-        loss = torch.mean(pos + neg)
-        return loss
+      self.features = Embeddings()
+
+  def forward(self, x):
+
+      logits = self.features(x)
+
+      return logits
