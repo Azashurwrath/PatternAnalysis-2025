@@ -7,6 +7,7 @@ from params import *
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score, classification_report
+import os
 
 # GPU Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -125,7 +126,8 @@ def train(model, train_loader, val_loader):
 
         if val_auc_score > best_val_auc:
           best_val_auc = val_auc_score
-          torch.save(model.state_dict(), "best_model.pth")
+          load_path = os.path.join("~/data/", "best_model.pth")
+          torch.save(model.state_dict(), load_path)
           print("Validation AUC higher, save model")
         else:
           print("Validation AUC lower")

@@ -28,6 +28,40 @@ Further preprocessing was done where the images were resized to 224x224. Three d
 
 A random weighted sampler was created for the train dataloader which allowed the loader to over sample the marginalized malignant class to provide more sample for the model to train on.
 
+## Environment/Dependencies
+
+This project was completed using the conda environment. The environment can be created using the following code:
+
+    conda env create -f environment.yml
+
+## Usage
+
+Run all commands from the root directory
+
+### File Setup
+
+    mkdir data
+
+### Correct directory for files
+
+Download the ISIC 2020 kaggle dataset and make sure the file names are file paths are the same as below:
+
+    data
+    ----image
+    ----train_metadata.csv
+
+## Model Training
+
+To get the model to train use the following code to train the model and save the trained model:
+
+    python train.py
+
+## Model Evaluation
+
+To get the model to evaluate on some test data after training and produce some plots and classification report use the following code:
+
+    python predict.py
+
 ## References
 
 [1] Sean Benhur, “A Friendly Introduction to Siamese Networks,” Built In, April 3 2025. [Online]. Available: https://builtin.com/machine-learning/siamese-network. [Accessed: Oct. 30 2025].

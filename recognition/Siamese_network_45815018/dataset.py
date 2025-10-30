@@ -19,6 +19,9 @@ random_state = 42
 split_val = 0.15
 split_test = 0.10
 
+file_path = '~/data/image'
+csv_path = '~/data/train-metadata.csv'
+
 # Training transforms with augmentation
 train_transform = transforms.Compose([
     transforms.Resize((224, 224)),            # Resize all images to a standard size
@@ -94,9 +97,6 @@ def class_dict(targets):
     to be split into train and validate data loaders
 """
 def train_and_validate_loaders():
-    file_path = './image'
-    csv_path = './train-metadata.csv'
-
     # Combine file paths with metadata
     csv = combine_file_paths(file_path, csv_path)
 
