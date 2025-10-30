@@ -8,6 +8,7 @@ import random
 from sklearn.model_selection import train_test_split
 import torch
 from params import *
+from pathlib import Path
 
 # For reproducibility
 random.seed(42)
@@ -15,22 +16,24 @@ gen = torch.Generator()
 gen.manual_seed(42)
 random_state = 42
 
-# Global Variables
+# Global Variables about data splits
 split_val = 0.15
 split_test = 0.10
 
-file_path = '~/data/image'
-csv_path = '~/data/train-metadata.csv'
+# Get root directory path to data images and metadata
+root_dir = Path(__file__).resolve().parent
+file_path = root_dir / "data" / "image"
+csv_path = root_dir / "data" / "train-metadata.csv"
 
 # Training transforms with augmentation
 train_transform = transforms.Compose([
-    transforms.Resize((224, 224)),            # Resize all images to a standard size
-    transforms.RandomHorizontalFlip(p=0.5),        # Random flip for augmentation
-    transforms.RandomVerticalFlip(p=0.5),          # Optional vertical flip
-    transforms.RandomRotation(30),            # Random rotations ±30 degrees
-    transforms.ToTensor(),                     # Convert to tensor
+    transforms.Resize((224, 224)),            
+    transforms.RandomHorizontalFlip(p=0.5),        
+    transforms.RandomVerticalFlip(p=0.5),          
+    transforms.RandomRotation(30),            
+    transforms.ToTensor(),                     
     transforms.Normalize(mean=[0.5, 0.5, 0.5],
-                     std=[0.5, 0.5, 0.5])  # Normalize for stability
+                     std=[0.5, 0.5, 0.5])
 ])
 
 # Validation/test transforms (no augmentation)
@@ -69,7 +72,12 @@ class SiameseDataset(Dataset):
         return img, torch.tensor(label, dtype=torch.float32)
 
 """
-    Combine the metadata csv and file paths to images into one file and row for easy access and use
+    Combine the metadata csv and file paths to images into one file
+    and row for easy access and use
+
+    Input:
+        image_path: Path to all images
+        csv_path: Path to all meta data about images
 """
 def combine_file_paths(image_path, csv_path):
     # Read csv
@@ -83,7 +91,11 @@ def combine_file_paths(image_path, csv_path):
     return temp_csv
 
 """
-    Separates a target list into a dictionary of classes containing indexes of each class value
+    Separates a target list into a dictionary of classes 
+    containing indexes of each class value
+
+    Input:
+        targets: The list of labels to create the class dictionaries from
 """
 def class_dict(targets):
     classes = {}
@@ -103,11 +115,11 @@ def train_and_validate_loaders():
     # Split into three seperate csv files to use for train:val:test
     train_csv, temp_csv = train_test_split(
         csv,
-        test_size=(1 - (split_test + split_val)),
+        test_size=(split_test + split_val),
         stratify=csv['target'],
         random_state=random_state
     )
-    val_ratio_adjusted = split_val / (1 - split_test)
+    val_ratio_adjusted = split_val / (split_val + split_test)
     val_csv, test_csv = train_test_split(
         temp_csv,
         test_size=(1 - val_ratio_adjusted),
@@ -122,8 +134,8 @@ def train_and_validate_loaders():
     val_paths = val_csv["image_path"].to_list()
     val_labels = val_csv["target"].to_list()
 
-    test_paths = val_csv["image_path"].to_list()
-    test_labels = val_csv["target"].to_list()
+    test_paths = test_csv["image_path"].to_list()
+    test_labels = test_csv["target"].to_list()
 
     train_dict = class_dict(train_labels)
 
@@ -152,4 +164,3 @@ def train_and_validate_loaders():
     test_loader = DataLoader(test_dataset, batch_size, shuffle=False)
 
     return train_loader, val_loader, test_loader
-
